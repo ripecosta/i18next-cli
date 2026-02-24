@@ -1190,12 +1190,14 @@ This programmatic API gives you the same power as the CLI but with full control 
 
 ---
 
-**From the creators of i18next: localization as a service - locize.com**
+**From the creators of i18next: localization as a service - [Locize](https://www.locize.com)**
 
-A translation management system built around the i18next ecosystem - [locize.com](https://www.locize.com).
+A translation management system built around the i18next ecosystem - [Locize](https://locize.com).
 
-![locize](https://www.locize.com/img/ads/github_locize.png)
+**Now with a [Free plan](https://locize.com/pricing) for small projects!** Perfect for hobbyists or getting started.
 
-With using [locize](https://locize.com/?utm_source=i18next_readme&utm_medium=github) you directly support the future of i18next.
+![Locize](https://www.locize.com/img/ads/github_locize.png)
+
+With using [Locize](https://www.locize.com/?utm_source=i18next_cli_readme&utm_medium=github) you directly support the future of i18next.
 
 ---
