@@ -283,6 +283,74 @@ export interface I18nextToolkitConfig {
   };
 }
 
+type MaybePromise<T> = T | Promise<T>
+
+/**
+ * Represents a linter issue reported for a source file.
+ */
+export interface LintIssue {
+  /** The hardcoded text content or interpolation error message */
+  text: string;
+  /** Line number where the issue was found */
+  line: number;
+  /** Issue category */
+  type?: 'hardcoded' | 'interpolation';
+}
+
+/**
+ * Context object provided to linter plugin hooks.
+ */
+export interface LintPluginContext {
+  /** The fully resolved i18next-cli configuration. */
+  config: I18nextToolkitConfig;
+
+  /** The logger instance used by the linter run. */
+  logger: Logger;
+}
+
+/**
+ * Linter-specific plugin hooks.
+ *
+ * This interface is kept separate so lint capabilities can evolve
+ * without coupling extractor hook definitions.
+ */
+export interface LinterPlugin {
+  /** Unique name for the plugin */
+  name: string;
+
+  /**
+   * Optional file-extension hint for lint-only hooks (optimization only).
+   *
+   * Examples: ['.vue'], ['vue', 'svelte']
+   */
+  lintExtensions?: string[];
+
+  /**
+   * Hook called once at the beginning of the linting process.
+   * Use for initialization required by lint hooks.
+   */
+  lintSetup?: (context: LintPluginContext) => MaybePromise<void>;
+
+  /**
+   * Hook called for each source file before lint parsing.
+   *
+   * Return semantics in lint pipeline:
+   * - string: use transformed code
+   * - undefined: pass through unchanged
+   * - null: skip linting this file entirely
+   */
+  lintOnLoad?: (code: string, filePath: string) => MaybePromise<string | null | undefined>;
+
+  /**
+   * Hook called after linting one file, allowing issue post-processing.
+   *
+   * Return semantics:
+   * - LintIssue[]: replace issues for this file
+   * - undefined: keep issues unchanged
+   */
+  lintOnResult?: (filePath: string, issues: LintIssue[]) => MaybePromise<LintIssue[] | undefined>;
+}
+
 /**
  * Plugin interface for extending the i18next toolkit functionality.
  * Plugins can hook into various stages of the extraction process.
@@ -314,7 +382,7 @@ export interface I18nextToolkitConfig {
  * })
  * ```
  */
-export interface Plugin {
+export interface Plugin extends LinterPlugin {
   /** Unique name for the plugin */
   name: string;
 
@@ -348,7 +416,7 @@ export interface Plugin {
    * Hook called once at the beginning of the extraction process.
    * Use for initialization tasks like setting up resources or validating configuration.
    */
-  setup?: () => void | Promise<void>;
+  setup?: () => MaybePromise<void>;
 
   /**
    * Hook called for each source file before it's parsed.
@@ -358,7 +426,7 @@ export interface Plugin {
    * @param path - The file path being processed
    * @returns The transformed code (or undefined to keep original)
    */
-  onLoad?: (code: string, path: string) => string | Promise<string>;
+  onLoad?: (code: string, path: string) => MaybePromise<string>;
 
   /**
    * Hook called for each AST node during traversal.
@@ -375,7 +443,7 @@ export interface Plugin {
    *
    * @param keys - Final map of all extracted keys
    */
-  onEnd?: (keys: ExtractedKeysMap) => void | Promise<void>;
+  onEnd?: (keys: ExtractedKeysMap) => MaybePromise<void>;
 
   /**
    * Hook called after all files have been processed and translation files have been generated.
@@ -384,7 +452,7 @@ export interface Plugin {
    * @param results - Array of translation results with update status and content.
    * @param config - The i18next toolkit configuration object.
    */
-  afterSync?: (results: TranslationResult[], config: I18nextToolkitConfig) => void | Promise<void>;
+  afterSync?: (results: TranslationResult[], config: I18nextToolkitConfig) => MaybePromise<void>;
 }
 
 /**

@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events'
 import { styleText } from 'node:util'
 import { ConsoleLogger } from './utils/logger'
 import { createSpinnerLike } from './utils/wrap-ora'
-import type { I18nextToolkitConfig, Logger } from './types'
+import type { I18nextToolkitConfig, Logger, LintIssue, Plugin, LintPluginContext } from './types'
 
 /**
  * Loads all translation values from the primary locale's JSON files and returns
@@ -103,8 +103,8 @@ function isI18nextOptionKey (key: string): boolean {
 }
 
 // Helper to lint interpolation parameter errors in t() calls
-function lintInterpolationParams (ast: any, code: string, config: I18nextToolkitConfig, translationValues?: Map<string, string>): HardcodedString[] {
-  const issues: HardcodedString[] = []
+function lintInterpolationParams (ast: any, code: string, config: I18nextToolkitConfig, translationValues?: Map<string, string>): LintIssue[] {
+  const issues: LintIssue[] = []
   // Only run if enabled (default true)
   const enabled = config.lint?.checkInterpolationParams !== false
   if (!enabled) return issues
@@ -261,7 +261,7 @@ type LinterEventMap = {
   done: [{
     success: boolean;
     message: string;
-    files: Record<string, HardcodedString[]>;
+    files: Record<string, LintIssue[]>;
   }];
   error: [error: Error];
 }
@@ -276,10 +276,12 @@ const defaultIgnoredTags = ['script', 'style', 'code']
 
 export class Linter extends EventEmitter<LinterEventMap> {
   private config: I18nextToolkitConfig
+  private logger: Logger
 
-  constructor (config: I18nextToolkitConfig) {
+  constructor (config: I18nextToolkitConfig, logger: Logger = new ConsoleLogger()) {
     super({ captureRejections: true })
     this.config = config
+    this.logger = logger
   }
 
   wrapError (error: unknown) {
@@ -314,11 +316,20 @@ export class Linter extends EventEmitter<LinterEventMap> {
       // Load translation values once so the interpolation linter can resolve lookup keys
       // to their translated strings (fixes: key != value interpolation not detected)
       const translationValues = await loadPrimaryTranslationValues(config)
+      const plugins = config.plugins || []
+      const lintPluginContext = this.createLintPluginContext(config)
+      await this.initializeLintPlugins(plugins, lintPluginContext)
       let totalIssues = 0
-      const issuesByFile = new Map<string, HardcodedString[]>()
+      const issuesByFile = new Map<string, LintIssue[]>()
 
       for (const file of sourceFiles) {
-        const code = await readFile(file, 'utf-8')
+        const sourceCode = await readFile(file, 'utf-8')
+        const lintPrepared = await this.runLintOnLoadPipeline(sourceCode, file, plugins)
+        if (lintPrepared === null) {
+          this.emit('progress', { message: `Skipped ${file} by plugin` })
+          continue
+        }
+        const code = lintPrepared
 
         // Determine parser options from file extension so .ts is not parsed as TSX
         const fileExt = extname(file).toLowerCase()
@@ -374,7 +385,8 @@ export class Linter extends EventEmitter<LinterEventMap> {
         const hardcodedStrings = findHardcodedStrings(ast, code, config)
         // Collect interpolation parameter issues
         const interpolationIssues = lintInterpolationParams(ast, code, config, translationValues)
-        const allIssues = [...hardcodedStrings, ...interpolationIssues]
+        let allIssues: LintIssue[] = [...hardcodedStrings, ...interpolationIssues]
+        allIssues = await this.runLintOnResultPipeline(file, allIssues, plugins)
         if (allIssues.length > 0) {
           totalIssues += allIssues.length
           issuesByFile.set(file, allIssues)
@@ -390,6 +402,73 @@ export class Linter extends EventEmitter<LinterEventMap> {
       this.emit('error', wrappedError)
       throw wrappedError
     }
+  }
+
+  private createLintPluginContext (config: I18nextToolkitConfig): LintPluginContext {
+    return {
+      config,
+      logger: this.logger,
+    }
+  }
+
+  private async initializeLintPlugins (plugins: Plugin[], context: LintPluginContext): Promise<void> {
+    for (const plugin of plugins) {
+      try {
+        await plugin.lintSetup?.(context)
+      } catch (err) {
+        const wrapped = this.wrapError(err)
+        this.emit('error', wrapped)
+      }
+    }
+  }
+
+  private normalizeExtension (ext: string): string {
+    const trimmed = ext.trim().toLowerCase()
+    if (!trimmed) return ''
+    return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
+  }
+
+  private shouldRunLintPluginForFile (plugin: Plugin, filePath: string): boolean {
+    const hints = plugin.lintExtensions
+    if (!hints || hints.length === 0) return true
+    const fileExt = this.normalizeExtension(extname(filePath))
+    if (!fileExt) return false
+    const normalizedHints = hints.map(hint => this.normalizeExtension(hint)).filter(Boolean)
+    if (normalizedHints.length === 0) return true
+    return normalizedHints.includes(fileExt)
+  }
+
+  private async runLintOnLoadPipeline (initialCode: string, filePath: string, plugins: Plugin[]): Promise<string | null> {
+    let code = initialCode
+    for (const plugin of plugins) {
+      if (!this.shouldRunLintPluginForFile(plugin, filePath)) continue
+      try {
+        const result = await plugin.lintOnLoad?.(code, filePath)
+        if (result === null) return null
+        if (typeof result === 'string') code = result
+      } catch (err) {
+        const wrapped = this.wrapError(err)
+        this.emit('error', wrapped)
+      }
+    }
+    return code
+  }
+
+  private async runLintOnResultPipeline (filePath: string, initialIssues: LintIssue[], plugins: Plugin[]): Promise<LintIssue[]> {
+    let issues = initialIssues
+    for (const plugin of plugins) {
+      if (!this.shouldRunLintPluginForFile(plugin, filePath)) continue
+      try {
+        const result = await plugin.lintOnResult?.(filePath, issues)
+        if (Array.isArray(result)) {
+          issues = result
+        }
+      } catch (err) {
+        const wrapped = this.wrapError(err)
+        this.emit('error', wrapped)
+      }
+    }
+    return issues
   }
 }
 
@@ -431,7 +510,7 @@ export async function runLinterCli (
   options: { quiet?: boolean, logger?: Logger } = {}
 ) {
   const internalLogger = options.logger ?? new ConsoleLogger()
-  const linter = new Linter(config)
+  const linter = new Linter(config, internalLogger)
   const spinner = createSpinnerLike('', { quiet: !!options.quiet, logger: options.logger })
   linter.on('progress', (event) => {
     spinner.text = event.message
@@ -462,18 +541,6 @@ export async function runLinterCli (
     else console.error(wrappedError)
     process.exit(1)
   }
-}
-
-/**
- * Represents a found hardcoded string or interpolation parameter error with its location information.
- */
-interface HardcodedString {
-  /** The hardcoded text content or error message */
-  text: string;
-  /** Line number where the string or error was found */
-  line: number;
-  /** The type of issue: 'hardcoded' for hardcoded strings, 'interpolation' for interpolation parameter errors */
-  type?: 'hardcoded' | 'interpolation';
 }
 
 const isUrlOrPath = (text: string) => /^(https|http|\/\/|^\/)/.test(text)
@@ -510,8 +577,8 @@ const isUrlOrPath = (text: string) => /^(https|http|\/\/|^\/)/.test(text)
  * // Outputs issues found or success message
  * ```
  */
-function findHardcodedStrings (ast: any, code: string, config: I18nextToolkitConfig): HardcodedString[] {
-  const issues: HardcodedString[] = []
+function findHardcodedStrings (ast: any, code: string, config: I18nextToolkitConfig): LintIssue[] {
+  const issues: LintIssue[] = []
   // A list of AST nodes that have been identified as potential issues.
   const nodesToLint: any[] = []
 

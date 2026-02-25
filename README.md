@@ -573,7 +573,7 @@ export default defineConfig({
 
 ### Plugin System
 
-Create custom plugins to extend the capabilities of `i18next-cli`. The plugin system provides several hooks that allow you to tap into different stages of the extraction process, with full access to the AST parsing context and variable scope information.
+Create custom plugins to extend the capabilities of `i18next-cli`. The plugin system provides hooks for both extraction and linting, with a single unified `plugins` array.
 
 **Available Hooks:**
 
@@ -584,6 +584,63 @@ Create custom plugins to extend the capabilities of `i18next-cli`. The plugin sy
 - `extractContextFromExpression`: Runs for specific expressions to extract context values that can't be statically analyzed. Useful for dynamic context patterns or custom context resolution logic.
 - `onEnd`: Runs after all JS/TS files have been parsed but *before* the final keys are compared with existing translation files. This is the ideal hook for parsing non-JavaScript files (like `.html`, `.vue`, or `.svelte`) and adding their keys to the collection.
 - `afterSync`: Runs after the extractor has compared the found keys with your translation files and generated the final results. This is perfect for post-processing tasks, like generating a report of newly added keys.
+
+**Lint Plugin Hooks:**
+
+- `lintSetup(context)`: Runs once before linting starts. Receives `LintPluginContext` with `config` and `logger`.
+- `lintExtensions`: Optional extension hint (for example `['.vue']`). Used as a skip hint/optimization.
+- `lintOnLoad(code, filePath)`: Runs before lint parsing for each file.
+  - Return `string` to replace source code for linting.
+  - Return `undefined` to pass through unchanged.
+  - Return `null` to skip linting the file entirely.
+- `lintOnResult(filePath, issues)`: Runs after each file is linted. Return a new issues array to filter/augment results, or `undefined` to keep as-is.
+
+### Lint Plugin API
+
+```typescript
+import type {
+  Plugin,
+  LinterPlugin,
+  LintPluginContext,
+  LintIssue,
+} from 'i18next-cli';
+
+// You can type your plugin as Plugin (full surface) or LinterPlugin (lint-focused)
+export const vueLintPlugin = (): LinterPlugin => ({
+  name: 'vue-lint-plugin',
+  lintExtensions: ['.vue'],
+  lintSetup: async (context: LintPluginContext) => {
+    context.logger.info('vue lint plugin initialized');
+  },
+  lintOnLoad: async (code, filePath) => {
+    if (!filePath.endsWith('.vue')) return undefined;
+    // preprocess SFC/template to lintable JS/TS/JSX text
+    return code;
+  },
+  lintOnResult: async (_filePath, issues: LintIssue[]) => {
+    // Example: keep only interpolation issues
+    return issues.filter(issue => issue.type === 'interpolation');
+  }
+});
+```
+
+**Config usage (same plugins list for extract + lint):**
+
+```typescript
+import { defineConfig } from 'i18next-cli';
+import { vueLintPlugin } from './plugins/vue-lint-plugin.mjs';
+
+export default defineConfig({
+  locales: ['en', 'de'],
+  extract: {
+    input: ['src/**/*.{ts,tsx,js,jsx,vue}'],
+    output: 'locales/{{language}}/{{namespace}}.json'
+  },
+  plugins: [
+    vueLintPlugin()
+  ]
+});
+```
 
 **Basic Plugin Example:**
 
