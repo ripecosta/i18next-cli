@@ -107,7 +107,10 @@ export async function runExtractor (
       }
     }
 
-    spinner.succeed(styleText('bold', 'Extraction complete!'))
+    const completionMessage = fileErrors.length > 0
+      ? styleText('bold', `Extraction complete, but ignored ${fileErrors.length} file${fileErrors.length === 1 ? '' : 's'}!`)
+      : styleText('bold', 'Extraction complete!')
+    spinner.succeed(completionMessage)
 
     // Show the funnel message only if files were actually changed.
     if (anyFileUpdated) await printLocizeFunnel(options.logger)
